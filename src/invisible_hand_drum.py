@@ -15,7 +15,7 @@ import time
 import numpy as np
 
 
-class HandMemory:
+class IHDHandMemory:
     """ Class implements memory over hand position to detect hand strokes from tracking data """
 
     def __init__(self):
@@ -117,10 +117,6 @@ class IHDController(Leap.Listener):
 
         self.user_played_notes = []
 
-        self.click_velocity = 100
-        self.click_pitch_beat_one = 48
-        self.click_pitch_beat_other = 49
-
         self.player.active_player = 'COMPUTER'
 
         # self.detection_method = 'key_tap'
@@ -167,10 +163,10 @@ class IHDController(Leap.Listener):
         frame = controller.frame()
 
         # hand stroke detection
-        play_command = self.gesture_detector.analyze(frame, curr_time)
+        command = self.gesture_detector.analyze_frame(frame, curr_time)
 
-        if play_command is not None:
-            self.player.play(play_command)
+        if command is not None:
+            self.player.play(command)
 
         # start metronome after initial delay
         if curr_time > self.start_time_first_beat and not self.metronome_started:
@@ -207,7 +203,7 @@ class IHDController(Leap.Listener):
 
     def play_click(self):
         """ Play click sound depending on beat position """
-        play_command = IHDPlayCommand()
+        command = IHDPlayCommand(instrument='click', level=0.8)
         if self.beat_idx == 0:
             self.bar_number += 1
             self.last_bar_start_time = time.time()
@@ -221,13 +217,11 @@ class IHDController(Leap.Listener):
                 self.quantize_user_played_notes()
             print('%s PLAYS NOW!' % self.player.active_player)
 
-            play_command.pitch = self.click_pitch_beat_one
-            play_command.velocity = self.click_velocity
+            command.note_id = 0
         else:
-            play_command.pitch = self.click_pitch_beat_other
-            play_command.velocity = self.click_velocity
+            command.note_id = 1
 
-        self.player.play(play_command)
+        self.player.play(command)
 
         self.beat_idx += 1
         self.beat_idx %= self.numerator
@@ -272,6 +266,13 @@ class IHDTools:
 
         return hexagon_positions
 
+    @staticmethod
+    def get_pitches_for_scale(scale):
+        if scale == 'ionian':
+            return np.arange(36, 43)
+        else:
+            raise Exception('Undefined scale')
+
 
 class IHDGestureDetector:
     """ Main class to detect drumming gestures based on LeapMotion controller data """
@@ -282,31 +283,29 @@ class IHDGestureDetector:
         self.reset_after_time_sec = 2
         self.frame_id = 0
         self.controller = controller
-        self.hand_memory = HandMemory()
+        self.hand_memory = IHDHandMemory()
 
         self.hexagon_positions_radius = 100
-        self.hexagon_positions_pitches = np.arange(36, 43)
         self.hexagon_positions = IHDTools.get_drum_positions_hexagon_layout(self.hexagon_positions_radius)
-        # todo cleanup avoid variable mix
-        self.hexagon_positions = np.hstack((self.hexagon_positions, self.hexagon_positions_pitches[:, np.newaxis]))
 
-    def analyze(self, frame, curr_time):
+    def analyze_frame(self, frame, curr_time):
+        """ Analyze current frame from motion capture device """
         self.update_time(curr_time)
         hand_stroke_position = self.detect_hand_stroke(frame)
-        play_command = None
+        command = None
 
         # if hand stroke was detected
         if hand_stroke_position is not None:
             self.last_event_time_sec = curr_time
-            play_command = IHDPlayCommand(self.get_pitch_from_position(hand_stroke_position), 1)
+            command = IHDPlayCommand(note_id=self.stroke_position_to_note_id(hand_stroke_position),
+                                     level=1)
 
         self.frame_id += 1
 
-        return play_command
+        return command
 
     def detect_hand_stroke(self, frame):
-        """ Manual detection of hand stroke motion of both hands
-            Performance: much better :) """
+        """ Use internal hand memory to detect hand strokes """
         hand_stroke_position = None
 
         # check that at least one hand is in the frame
@@ -327,32 +326,31 @@ class IHDGestureDetector:
             self.hand_memory.reset_all()
             self.last_event_time_sec = curr_time
 
-    def get_pitch_from_position(self, position):
+    def stroke_position_to_note_id(self, position):
         """ Convert spatial position into drum number based on hexagon drum layout
         Args:
             position (tuple): Spatial hand_position (x, y, z)
         Returns
-            pitch (
+            drum_id
             """
         curr_pos = np.array((position[0], position[2]))
 
         # nearest neighbor search
-        dist = np.sqrt(np.sum(np.square(self.hexagon_positions[:, :2] - curr_pos), axis=1))
+        dist = np.sqrt(np.sum(np.square(self.hexagon_positions - curr_pos), axis=1))
 
         drum_id = np.argmin(dist)
-        pitch = self.hexagon_positions[drum_id, 2]
 
         self.controller.user_played_notes.append((time.time() - self.controller.last_bar_start_time, drum_id))
 
-        return pitch
+        return drum_id
 
 
 class IHDPlayCommand:
 
-    def __init__(self, pitch=None, velocity=None):
-        self.pitch = pitch
-        self.velocity = velocity
-        self.instrument = 'drum'
+    def __init__(self, note_id=None, level=None, instrument='drum'):
+        self.note_id = note_id
+        self.level = level
+        self.instrument = instrument
 
 
 class IHDPlayer:
@@ -368,9 +366,11 @@ class IHDPlayer:
         else:
             self.midi_out.open_virtual_port("virtual_hand_drum")
 
-        self.scale = ''
+        self.scale = 'ionian'
         self.active_player = None
-        pass
+
+        self.instrument_drum_id_pitch = {'drum': IHDTools.get_pitches_for_scale(self.scale),
+                                         'click': np.array((48, 49))}
 
     def update(self):
 
@@ -380,19 +380,24 @@ class IHDPlayer:
                 last_beat_passed = beats_passed[-1]
                 active_pitches = np.where(self.controller.quant_mat[:, last_beat_passed])[0]
                 if len(active_pitches) > 0:
-                    for pitch_idx in active_pitches:
-                        play_command = IHDPlayCommand(self.controller.gesture_detector.hexagon_positions_pitches[pitch_idx], 1)
-                        self.controller.player.play(play_command)
-                        self.controller.quant_mat[pitch_idx, last_beat_passed] = False
+                    for note_id in active_pitches:
+                        command = IHDPlayCommand(note_id, 1, instrument='drum')
+                        self.controller.player.play(command)
+                        self.controller.quant_mat[note_id, last_beat_passed] = False
 
     def change_scale(self, scale):
-        # TODO implement me
+        """ Change internal scale to change mapping from note ids to pitches """
         self.scale = scale
+        self.instrument_drum_id_pitch['drum'] = IHDTools.get_pitches_for_scale(self.scale)
 
-    def play(self, play_command):
-        velocity = int(122.*play_command.velocity)
-        note_on = [0x90, play_command.pitch, play_command.velocity]  # channel 1, middle C, velocity 112
-        self.midi_out.send_message(note_on) 
+    def play(self, command):
+        """ Translate instrument, drum_id, and level to MIDI note event """
+        pitch = self.instrument_drum_id_pitch[command.instrument][command.note_id]
+        velocity = int(122.*command.level)
+        # todo remove
+        if command.instrument == 'click':
+            velocity = 100
+        self.midi_out.send_message([0x90, pitch, velocity])
 
 
 def main():
