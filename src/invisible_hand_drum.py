@@ -419,6 +419,7 @@ class Player:
 
 
 def main():
+
     # Create a sample listener and controller
     listener = VirtualHangDrum()
     controller = Leap.Controller()
