@@ -25,7 +25,6 @@ class HandMemory:
         self.reset_all()
 
     def reset_all(self):
-        # print('RESET ALL')
         self.memory = {}
         self.delta_height = 15
         self.delta_height_border = -3
@@ -146,10 +145,6 @@ class IHDController(Leap.Listener):
         # controller.enable_gesture(Leap.Gesture.TYPE_SCREEN_TAP)
         # controller.enable_gesture(Leap.Gesture.TYPE_SWIPE)
 
-        # print('controller.config.set("Gesture.KeyTap.MinDownVelocity"' + str(controller.config.get("Gesture.KeyTap.MinDownVelocity")))
-        # print('controller.config.set("Gesture.KeyTap.HistorySeconds"' + str(controller.config.get("Gesture.KeyTap.HistorySeconds")))
-        # print('controller.config.set("Gesture.KeyTap.MinDistance"' + str(controller.config.get("Gesture.KeyTap.MinDistance")))
-
         # todo place parameters to class arguments
         controller.config.set("Gesture.KeyTap.MinDownVelocity", 20)# 40.0)
         controller.config.set("Gesture.KeyTap.HistorySeconds", .1) #.2)
@@ -174,9 +169,8 @@ class IHDController(Leap.Listener):
         # hand stroke detection
         play_command = self.gesture_detector.analyze(frame, curr_time)
 
-        if play_command.pitch is not None:
+        if play_command is not None:
             self.player.play(play_command)
-
 
         # start metronome after initial delay
         if curr_time > self.start_time_first_beat and not self.metronome_started:
@@ -198,9 +192,6 @@ class IHDController(Leap.Listener):
 
         self.player.update()
 
-
-
-
     def quantize_user_played_notes(self):
         self.quant_mat = np.zeros((7, self.numerator*2))
         for note in self.user_played_notes:
@@ -213,11 +204,6 @@ class IHDController(Leap.Listener):
             r = int(np.floor(np.random.random()*nr))
             c = int(np.floor(np.random.random()*nc))
             self.quant_mat[r, c] = np.logical_not(self.quant_mat[r, c])
-
-        #
-        # print(self.user_played_notes)
-        # print(self.quant_mat)
-
 
     def play_click(self):
         """ Play click sound depending on beat position """
@@ -255,20 +241,16 @@ class IHDController(Leap.Listener):
         self.prev_time_mod = curr_time_mod
 
 
-class IHDGestureDetector:
-    """ Main class to detect drumming gestures based on LeapMotion controller data """
+class IHDTools:
+    """ Additional tools """
 
-    def __init__(self, controller):
-        self.start_time = time.time()
-        self.last_event_time = 0
-        self.reset_after_time = 2
-        self.frame_id = 0
-        self.controller = controller
+    def __init__(self):
+        pass
 
-        self.hand_memory = HandMemory()
+    @staticmethod
+    def get_drum_positions_hexagon_layout(radius):
+        """ Hexagon drum layout (similar to Hang drum)
 
-        # hexagon layout for Hang drum
-        """
                     P7
 
               P5          P6
@@ -277,35 +259,46 @@ class IHDGestureDetector:
               P3          P4
 
                     P2
-
         """
+        radius_norm = np.sqrt(3) / 2 * radius
+        radius_norm_1_2 = radius_norm / 2.
+        hexagon_positions = np.array(((0, 0),
+                                      (0, radius_norm),
+                                      (-radius_norm, radius_norm_1_2),
+                                      (radius_norm, radius_norm_1_2),
+                                      (-radius_norm, -radius_norm_1_2),
+                                      (radius_norm, -radius_norm_1_2),
+                                      (0, -radius_norm)))
+
+        return hexagon_positions
+
+
+class IHDGestureDetector:
+    """ Main class to detect drumming gestures based on LeapMotion controller data """
+
+    def __init__(self, controller):
+        self.start_time = time.time()
+        self.last_event_time_sec = 0
+        self.reset_after_time_sec = 2
+        self.frame_id = 0
+        self.controller = controller
+        self.hand_memory = HandMemory()
 
         self.hexagon_positions_radius = 100
-        r1 = self.hexagon_positions_radius
-        r2 = np.sqrt(3) / 2 * r1
-        r1_2 = r1 / 2.
-
         self.hexagon_positions_pitches = np.arange(36, 43)
-        self.hexagon_positions = np.array(((0, 0),
-                                            (0, r1),
-                                            (-r2, r1_2),
-                                            (r2, r1_2),
-                                            (-r2, -r1_2),
-                                            (r2, -r1_2),
-                                            (0, -r1)))
-
+        self.hexagon_positions = IHDTools.get_drum_positions_hexagon_layout(self.hexagon_positions_radius)
+        # todo cleanup avoid variable mix
         self.hexagon_positions = np.hstack((self.hexagon_positions, self.hexagon_positions_pitches[:, np.newaxis]))
 
     def analyze(self, frame, curr_time):
         self.update_time(curr_time)
         hand_stroke_position = self.detect_hand_stroke(frame)
-        play_command = IHDPlayCommand()
+        play_command = None
 
         # if hand stroke was detected
         if hand_stroke_position is not None:
-            self.last_event_time = curr_time
-            play_command.pitch = self.get_pitch_from_position(hand_stroke_position)
-            play_command.velocity = 1# todo replace by analyzing hand motion (velocity before stroke was detected)
+            self.last_event_time_sec = curr_time
+            play_command = IHDPlayCommand(self.get_pitch_from_position(hand_stroke_position), 1)
 
         self.frame_id += 1
 
@@ -330,21 +323,26 @@ class IHDGestureDetector:
 
     def update_time(self, curr_time):
         # check for hand memory reset
-        if curr_time - self.last_event_time > self.reset_after_time:
+        if curr_time - self.last_event_time_sec > self.reset_after_time_sec:
             self.hand_memory.reset_all()
-            self.last_event_time = curr_time
+            self.last_event_time_sec = curr_time
 
-    def get_pitch_from_position(self, position, hexagon_layout=True):
-
+    def get_pitch_from_position(self, position):
+        """ Convert spatial position into drum number based on hexagon drum layout
+        Args:
+            position (tuple): Spatial hand_position (x, y, z)
+        Returns
+            pitch (
+            """
         curr_pos = np.array((position[0], position[2]))
 
         # nearest neighbor search
         dist = np.sqrt(np.sum(np.square(self.hexagon_positions[:, :2] - curr_pos), axis=1))
 
-        pitch_id = np.argmin(dist)
-        pitch = self.hexagon_positions[pitch_id, 2]
+        drum_id = np.argmin(dist)
+        pitch = self.hexagon_positions[drum_id, 2]
 
-        self.controller.user_played_notes.append((time.time() - self.controller.last_bar_start_time, pitch_id))
+        self.controller.user_played_notes.append((time.time() - self.controller.last_bar_start_time, drum_id))
 
         return pitch
 
@@ -354,6 +352,7 @@ class IHDPlayCommand:
     def __init__(self, pitch=None, velocity=None):
         self.pitch = pitch
         self.velocity = velocity
+        self.instrument = 'drum'
 
 
 class IHDPlayer:
@@ -393,7 +392,7 @@ class IHDPlayer:
     def play(self, play_command):
         velocity = int(122.*play_command.velocity)
         note_on = [0x90, play_command.pitch, play_command.velocity]  # channel 1, middle C, velocity 112
-        self.midi_out.send_message(note_on)
+        self.midi_out.send_message(note_on) 
 
 
 def main():
