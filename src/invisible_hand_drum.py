@@ -15,78 +15,6 @@ import time
 import numpy as np
 
 
-class IHDHandMemory:
-    """ Class implements memory over hand position to detect hand strokes from tracking data """
-
-    def __init__(self):
-        self.memory = None
-        self.delta_height = None
-        self.delta_height_border = None
-        self.reset_all()
-
-    def reset_all(self):
-        self.memory = {}
-        self.delta_height = 15
-        self.delta_height_border = -3
-
-    def check_for_hand_stroke(self, _id, position, curr_frame_id):
-        """ Check current and previous hand positions to detect hand stroke"""
-        height = position[1]
-        check = False
-
-        # check if hand with ID is already saved in the hand memory
-        if _id not in self.memory:
-            # create new entry for new hand ID
-            self.memory[_id] = {'prev_height': height,
-                                'downwards': False,
-                                'prev_frame_id': curr_frame_id,
-                                'hit_detected': False,
-                                'prev_position': position,
-                                'min_movement_distance_check': False}
-        else:
-            # update existing entry 
-            self.memory[_id]['prev_frame_id'] = curr_frame_id
-            # get direction of movement (upwards / downwards)
-            self.memory[_id]['downwards'] = height < self.memory[_id]['prev_height']
-            if self.memory[_id]['downwards']:
-                # check height distance since last frame
-                delta_height = position[1] - self.memory[_id]['prev_position'][1]
-                if delta_height < self.delta_height_border:
-                    self.memory[_id]['min_movement_distance_check'] = True
-            else:
-                # reset
-                self.reset_id(_id, height)
-            # save current hand position for next frame
-            self.memory[_id]['prev_position'] = position
-
-        # detect hand stroke
-        if self.memory[_id]['prev_height'] - height > self.delta_height and \
-           not self.memory[_id]['hit_detected'] and \
-           self.memory[_id]['min_movement_distance_check']:
-            check = True
-            # print('Bam! %d ' % curr_frame_id)
-
-            self.memory[_id]['prev_height'] = height
-            self.memory[_id]['hit_detected'] = True
-
-        # remove old entries
-        self.remove_old_entries(curr_frame_id)
-        return check
-
-    def remove_old_entries(self, curr_frame_id):
-        """ Remove "old" hands, whose IDs were not tracked in the previous frame
-            (if hand tracking is interrupted, hand gets new ID, old one gets obsolete
-        """
-        for _key in self.memory.keys():
-            if curr_frame_id - self.memory[_key]['prev_frame_id'] > 1:
-                self.memory.pop(_key)
-
-    def reset_id(self, _id, height):
-        """ Reset memory entry (after hand starts moving upwards) """
-        self.memory[_id]['prev_height'] = height
-        self.memory[_id]['hit_detected'] = False
-
-
 class IHDController(Leap.Listener):
     """ Main controller class """
 
@@ -137,14 +65,18 @@ class IHDController(Leap.Listener):
 
         # Enable gestures
         # controller.enable_gesture(Leap.Gesture.TYPE_CIRCLE)
-        controller.enable_gesture(Leap.Gesture.TYPE_KEY_TAP)
+        # controller.enable_gesture(Leap.Gesture.TYPE_KEY_TAP)
         # controller.enable_gesture(Leap.Gesture.TYPE_SCREEN_TAP)
-        # controller.enable_gesture(Leap.Gesture.TYPE_SWIPE)
+        controller.enable_gesture(Leap.Gesture.TYPE_SWIPE)
 
         # todo place parameters to class arguments
         controller.config.set("Gesture.KeyTap.MinDownVelocity", 20)# 40.0)
         controller.config.set("Gesture.KeyTap.HistorySeconds", .1) #.2)
         controller.config.set("Gesture.KeyTap.MinDistance", 5)#1.0)
+
+        controller.config.set("Gesture.Swipe.MinLength", 300.0)
+        controller.config.set("Gesture.Swipe.MinVelocity", 750)
+
         # controller.config.save()
 
     def on_disconnect(self, controller):
@@ -235,6 +167,78 @@ class IHDController(Leap.Listener):
         self.prev_time_mod = curr_time_mod
 
 
+class IHDHandMemory:
+    """ Class implements memory over hand position to detect hand strokes from tracking data """
+
+    def __init__(self):
+        self.memory = None
+        self.delta_height = None
+        self.delta_height_border = None
+        self.reset_all()
+
+    def reset_all(self):
+        self.memory = {}
+        self.delta_height = 15
+        self.delta_height_border = -3
+
+    def check_for_hand_stroke(self, _id, position, curr_frame_id):
+        """ Check current and previous hand positions to detect hand stroke"""
+        height = position[1]
+        check = False
+
+        # check if hand with ID is already saved in the hand memory
+        if _id not in self.memory:
+            # create new entry for new hand ID
+            self.memory[_id] = {'prev_height': height,
+                                'downwards': False,
+                                'prev_frame_id': curr_frame_id,
+                                'hit_detected': False,
+                                'prev_position': position,
+                                'min_movement_distance_check': False}
+        else:
+            # update existing entry
+            self.memory[_id]['prev_frame_id'] = curr_frame_id
+            # get direction of movement (upwards / downwards)
+            self.memory[_id]['downwards'] = height < self.memory[_id]['prev_height']
+            if self.memory[_id]['downwards']:
+                # check height distance since last frame
+                delta_height = position[1] - self.memory[_id]['prev_position'][1]
+                if delta_height < self.delta_height_border:
+                    self.memory[_id]['min_movement_distance_check'] = True
+            else:
+                # reset
+                self.reset_id(_id, height)
+            # save current hand position for next frame
+            self.memory[_id]['prev_position'] = position
+
+        # detect hand stroke
+        if self.memory[_id]['prev_height'] - height > self.delta_height and \
+           not self.memory[_id]['hit_detected'] and \
+           self.memory[_id]['min_movement_distance_check']:
+            check = True
+            # print('Bam! %d ' % curr_frame_id)
+
+            self.memory[_id]['prev_height'] = height
+            self.memory[_id]['hit_detected'] = True
+
+        # remove old entries
+        self.remove_old_entries(curr_frame_id)
+        return check
+
+    def remove_old_entries(self, curr_frame_id):
+        """ Remove "old" hands, whose IDs were not tracked in the previous frame
+            (if hand tracking is interrupted, hand gets new ID, old one gets obsolete
+        """
+        for _key in self.memory.keys():
+            if curr_frame_id - self.memory[_key]['prev_frame_id'] > 1:
+                self.memory.pop(_key)
+
+    def reset_id(self, _id, height):
+        """ Reset memory entry (after hand starts moving upwards) """
+        self.memory[_id]['prev_height'] = height
+        self.memory[_id]['hit_detected'] = False
+
+
 class IHDTools:
     """ Additional tools """
 
@@ -270,6 +274,12 @@ class IHDTools:
     def get_pitches_for_scale(scale):
         if scale == 'ionian':
             return np.arange(36, 43)
+        elif scale == 'ionian_inv':
+            return np.arange(42, 35, -1)
+        elif scale == 'random':
+            pitches = np.arange(36, 42)
+            np.random.shuffle(pitches)
+            return pitches
         else:
             raise Exception('Undefined scale')
 
@@ -288,9 +298,18 @@ class IHDGestureDetector:
         self.hexagon_positions_radius = 100
         self.hexagon_positions = IHDTools.get_drum_positions_hexagon_layout(self.hexagon_positions_radius)
 
+        self.swipe_min_abs_dx = 80
+        self.last_swipe_detected_sec = 0
+        self.min_time_between_swipes_sec = .5
+
+        self.state_names = ['STATE_INVALID', 'STATE_START', 'STATE_UPDATE', 'STATE_END']
+
     def analyze_frame(self, frame, curr_time):
-        """ Analyze current frame from motion capture device """
+        """ Analyze current frame for relevant gestures from motion capture device """
         self.update_time(curr_time)
+
+        self.detect_swipe_gesture(frame)
+
         hand_stroke_position = self.detect_hand_stroke(frame)
         command = None
 
@@ -303,6 +322,35 @@ class IHDGestureDetector:
         self.frame_id += 1
 
         return command
+
+    def detect_swipe_gesture(self, frame):
+        """ Customized function to detect swipe gestures of both hands in both directions (right / left) """
+
+        for gesture in frame.gestures():
+
+            if gesture.type == Leap.Gesture.TYPE_SWIPE:
+
+                if time.time() - self.last_swipe_detected_sec > self.min_time_between_swipes_sec:
+
+                    swipe = SwipeGesture(gesture)
+
+                    start_position = swipe.start_position
+                    position = swipe.position
+
+                    dx = start_position[0] - position[0]
+
+                    is_left_hand = swipe.pointable.hand.is_left
+
+                    swipe_is_rightwards = dx < 0
+                    if abs(dx) > self.swipe_min_abs_dx:
+                        self.last_swipe_detected_sec = time.time()  # todo replace by time stamp from main class
+
+                        if not is_left_hand:
+                            self.controller.player.next_scale(next_=swipe_is_rightwards)
+
+                        # print('Swipe detected (dx = %f), direction = %s, hand = %s' % (dx,
+                        #                                                                'right' if swipe_is_rightwards else 'left',
+                        #                                                                'left' if is_left_hand else 'right'))
 
     def detect_hand_stroke(self, frame):
         """ Use internal hand memory to detect hand strokes """
@@ -366,11 +414,19 @@ class IHDPlayer:
         else:
             self.midi_out.open_virtual_port("virtual_hand_drum")
 
-        self.scale = 'ionian'
+        self.scale_id = 0
+        self.scales = ['ionian', 'ionian_inv', 'random']
+        self.num_scales = len(self.scales)
         self.active_player = None
 
-        self.instrument_drum_id_pitch = {'drum': IHDTools.get_pitches_for_scale(self.scale),
-                                         'click': np.array((48, 49))}
+    def drum_id_to_pitch(self, instrument, drum_id):
+        if instrument == 'drum':
+            pitches = IHDTools.get_pitches_for_scale(self.scales[self.scale_id])
+        elif instrument == 'click':
+            pitches = np.array((48, 49))
+        else:
+            raise Exception('Non-valid instrument')
+        return pitches[drum_id]
 
     def update(self):
 
@@ -385,14 +441,26 @@ class IHDPlayer:
                         self.controller.player.play(command)
                         self.controller.quant_mat[note_id, last_beat_passed] = False
 
-    def change_scale(self, scale):
+    def next_scale(self, next_=True):
+        if next_:
+            if self.scale_id < self.num_scales - 1:
+                self.change_scale(self.scale_id + 1)
+            else:
+                self.change_scale(0)
+        else:
+            if self.scale_id > 0:
+                self.change_scale(self.scale_id - 1)
+            else:
+                self.change_scale(self.num_scales - 1)
+
+    def change_scale(self, scale_id):
         """ Change internal scale to change mapping from note ids to pitches """
-        self.scale = scale
-        self.instrument_drum_id_pitch['drum'] = IHDTools.get_pitches_for_scale(self.scale)
+        self.scale_id = scale_id
+        print('Changed scale to %s' % self.scales[self.scale_id])
 
     def play(self, command):
         """ Translate instrument, drum_id, and level to MIDI note event """
-        pitch = self.instrument_drum_id_pitch[command.instrument][command.note_id]
+        pitch = self.drum_id_to_pitch(command.instrument, command.note_id)
         velocity = int(122.*command.level)
         # todo remove
         if command.instrument == 'click':
