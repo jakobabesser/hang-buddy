@@ -167,7 +167,23 @@ class IHDController(Leap.Listener):
         self.prev_time_mod = curr_time_mod
 
 
-class IHDHandMemory:
+class IHDHandTracking:
+    """ Class implements entry in hand memory """
+    def __init__(self,
+                 height,
+                 frame_id,
+                 position,
+                 downwards=False,
+                 hit_detected=False,
+                 min_movement_distance_check=None):
+        self.prev_height = height
+        self.prev_frame_id = frame_id
+        self.prev_position = position
+        self.downwards = downwards
+        self.hit_detected = hit_detected
+        self.min_movement_distance_check = min_movement_distance_check
+
+class IHDHandTrackingMemory:
     """ Class implements memory over hand position to detect hand strokes from tracking data """
 
     def __init__(self):
@@ -181,7 +197,7 @@ class IHDHandMemory:
         self.delta_height = 15
         self.delta_height_border = -3
 
-    def check_for_hand_stroke(self, _id, position, curr_frame_id):
+    def check_for_hand_stroke(self, _id, position, frame_id):
         """ Check current and previous hand positions to detect hand stroke"""
         height = position[1]
         check = False
@@ -189,54 +205,49 @@ class IHDHandMemory:
         # check if hand with ID is already saved in the hand memory
         if _id not in self.memory:
             # create new entry for new hand ID
-            self.memory[_id] = {'prev_height': height,
-                                'downwards': False,
-                                'prev_frame_id': curr_frame_id,
-                                'hit_detected': False,
-                                'prev_position': position,
-                                'min_movement_distance_check': False}
+            self.memory[_id] = IHDHandTracking(height, frame_id, position)
         else:
             # update existing entry
-            self.memory[_id]['prev_frame_id'] = curr_frame_id
+            self.memory[_id].prev_frame_id = frame_id
             # get direction of movement (upwards / downwards)
-            self.memory[_id]['downwards'] = height < self.memory[_id]['prev_height']
-            if self.memory[_id]['downwards']:
+            self.memory[_id].downwards = height < self.memory[_id].prev_height
+            if self.memory[_id].downwards:
                 # check height distance since last frame
-                delta_height = position[1] - self.memory[_id]['prev_position'][1]
+                delta_height = position[1] - self.memory[_id].prev_position[1]
                 if delta_height < self.delta_height_border:
-                    self.memory[_id]['min_movement_distance_check'] = True
+                    self.memory[_id].min_movement_distance_check = True
             else:
-                # reset
+                # reset if hand goes upwards again
                 self.reset_id(_id, height)
             # save current hand position for next frame
-            self.memory[_id]['prev_position'] = position
+            self.memory[_id].prev_position = position
 
         # detect hand stroke
-        if self.memory[_id]['prev_height'] - height > self.delta_height and \
-           not self.memory[_id]['hit_detected'] and \
-           self.memory[_id]['min_movement_distance_check']:
+        if self.memory[_id].prev_height - height > self.delta_height and \
+           not self.memory[_id].hit_detected and \
+           self.memory[_id].min_movement_distance_check:
             check = True
-            # print('Bam! %d ' % curr_frame_id)
+            # print('Bam! %d ' % frame_id)
 
-            self.memory[_id]['prev_height'] = height
-            self.memory[_id]['hit_detected'] = True
+            self.memory[_id].prev_height = height
+            self.memory[_id].hit_detected = True
 
         # remove old entries
-        self.remove_old_entries(curr_frame_id)
+        self.remove_hands_from_memory_after_interuption(frame_id)
         return check
 
-    def remove_old_entries(self, curr_frame_id):
+    def remove_hands_from_memory_after_interuption(self, frame_id):
         """ Remove "old" hands, whose IDs were not tracked in the previous frame
             (if hand tracking is interrupted, hand gets new ID, old one gets obsolete
         """
         for _key in self.memory.keys():
-            if curr_frame_id - self.memory[_key]['prev_frame_id'] > 1:
+            if frame_id - self.memory[_key].prev_frame_id > 1:
                 self.memory.pop(_key)
 
     def reset_id(self, _id, height):
         """ Reset memory entry (after hand starts moving upwards) """
-        self.memory[_id]['prev_height'] = height
-        self.memory[_id]['hit_detected'] = False
+        self.memory[_id].prev_height = height
+        self.memory[_id].hit_detected = False
 
 
 class IHDTools:
@@ -277,7 +288,7 @@ class IHDTools:
         elif scale == 'ionian_inv':
             return np.arange(42, 35, -1)
         elif scale == 'random':
-            pitches = np.arange(36, 42)
+            pitches = np.arange(36, 43)
             np.random.shuffle(pitches)
             return pitches
         else:
@@ -293,7 +304,7 @@ class IHDGestureDetector:
         self.reset_after_time_sec = 2
         self.frame_id = 0
         self.controller = controller
-        self.hand_memory = IHDHandMemory()
+        self.hand_memory = IHDHandTrackingMemory()
 
         self.hexagon_positions_radius = 100
         self.hexagon_positions = IHDTools.get_drum_positions_hexagon_layout(self.hexagon_positions_radius)
@@ -347,10 +358,6 @@ class IHDGestureDetector:
 
                         if not is_left_hand:
                             self.controller.player.next_scale(next_=swipe_is_rightwards)
-
-                        # print('Swipe detected (dx = %f), direction = %s, hand = %s' % (dx,
-                        #                                                                'right' if swipe_is_rightwards else 'left',
-                        #                                                                'left' if is_left_hand else 'right'))
 
     def detect_hand_stroke(self, frame):
         """ Use internal hand memory to detect hand strokes """
