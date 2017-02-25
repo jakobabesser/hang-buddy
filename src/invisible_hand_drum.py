@@ -175,13 +175,15 @@ class IHDHandTracking:
                  position,
                  downwards=False,
                  hit_detected=False,
-                 min_movement_distance_check=None):
-        self.prev_height = height
+                 min_movement_per_frame_check=None):
+        self.prev_max_height = height
         self.prev_frame_id = frame_id
         self.prev_position = position
         self.downwards = downwards
         self.hit_detected = hit_detected
-        self.min_movement_distance_check = min_movement_distance_check
+        self.min_movement_per_frame_check = min_movement_per_frame_check
+        self.all_distance_per_frame = []
+
 
 class IHDHandTrackingMemory:
     """ Class implements memory over hand position to detect hand strokes from tracking data """
@@ -189,18 +191,19 @@ class IHDHandTrackingMemory:
     def __init__(self):
         self.memory = None
         self.delta_height = None
-        self.delta_height_border = None
+        self.delta_height_per_frame_threshold = None
         self.reset_all()
 
     def reset_all(self):
         self.memory = {}
         self.delta_height = 15
-        self.delta_height_border = -3
+        self.delta_height_per_frame_threshold = 3
 
     def check_for_hand_stroke(self, _id, position, frame_id):
         """ Check current and previous hand positions to detect hand stroke"""
         height = position[1]
         check = False
+        velocity = 0
 
         # check if hand with ID is already saved in the hand memory
         if _id not in self.memory:
@@ -210,31 +213,44 @@ class IHDHandTrackingMemory:
             # update existing entry
             self.memory[_id].prev_frame_id = frame_id
             # get direction of movement (upwards / downwards)
-            self.memory[_id].downwards = height < self.memory[_id].prev_height
+            self.memory[_id].downwards = height < self.memory[_id].prev_max_height
+
             if self.memory[_id].downwards:
                 # check height distance since last frame
-                delta_height = position[1] - self.memory[_id].prev_position[1]
-                if delta_height < self.delta_height_border:
-                    self.memory[_id].min_movement_distance_check = True
+                delta_height = self.memory[_id].prev_position[1] - height
+                self.memory[_id].all_distance_per_frame.append(delta_height)
+                if delta_height > self.delta_height_per_frame_threshold:
+                    self.memory[_id].min_movement_per_frame_check = True
             else:
                 # reset if hand goes upwards again
                 self.reset_id(_id, height)
             # save current hand position for next frame
             self.memory[_id].prev_position = position
 
-        # detect hand stroke
-        if self.memory[_id].prev_height - height > self.delta_height and \
+        # detect hand stroke if three conditions are fulfilled (during current downwards movement):
+        #   1) overall vertical moving distance exceeds threshold
+        #   2) no drum stroke was detected so far
+        #   3) minimum velocity (vertical moving distance per frame) was exceeded
+        if self.memory[_id].prev_max_height - height > self.delta_height and \
            not self.memory[_id].hit_detected and \
-           self.memory[_id].min_movement_distance_check:
+           self.memory[_id].min_movement_per_frame_check:
             check = True
-            # print('Bam! %d ' % frame_id)
 
-            self.memory[_id].prev_height = height
+            mean_vertical_distance_per_frame = np.mean(np.array(self.memory[_id].all_distance_per_frame))
+            velocity = self.compute_velocity(mean_vertical_distance_per_frame)
+            print('velo = %f' % velocity)
+            self.memory[_id].prev_max_height = height
             self.memory[_id].hit_detected = True
 
         # remove old entries
         self.remove_hands_from_memory_after_interuption(frame_id)
-        return check
+        return check, velocity
+
+    def compute_velocity(self, mean_vertical_distance_per_frame):
+        """ Map hand movement mean vertical distance per frame (vertical velocity) to velocity measure between 0 and 1.
+            Based on tests, slow hand strokes are around 1...3, fast ones around 6..9
+        """
+        return min((1, mean_vertical_distance_per_frame / 9))
 
     def remove_hands_from_memory_after_interuption(self, frame_id):
         """ Remove "old" hands, whose IDs were not tracked in the previous frame
@@ -246,8 +262,9 @@ class IHDHandTrackingMemory:
 
     def reset_id(self, _id, height):
         """ Reset memory entry (after hand starts moving upwards) """
-        self.memory[_id].prev_height = height
+        self.memory[_id].prev_max_height = height
         self.memory[_id].hit_detected = False
+        self.memory[_id].all_distance_per_frame = []
 
 
 class IHDTools:
@@ -321,14 +338,14 @@ class IHDGestureDetector:
 
         self.detect_swipe_gesture(frame)
 
-        hand_stroke_position = self.detect_hand_stroke(frame)
+        hand_stroke_position, hand_stroke_velocity = self.detect_hand_stroke(frame)
         command = None
 
         # if hand stroke was detected
         if hand_stroke_position is not None:
             self.last_event_time_sec = curr_time
             command = IHDPlayCommand(note_id=self.stroke_position_to_note_id(hand_stroke_position),
-                                     level=1)
+                                     level=hand_stroke_velocity)
 
         self.frame_id += 1
 
@@ -365,15 +382,17 @@ class IHDGestureDetector:
 
         # check that at least one hand is in the frame
         hands = frame.hands
+        velocity = 0
         if len(hands) > 0:
             for hand in hands:
                 _id = hand.id
                 position = hand.palm_position
 
-                if self.hand_memory.check_for_hand_stroke(_id, position, self.frame_id):
+                check, velocity = self.hand_memory.check_for_hand_stroke(_id, position, self.frame_id)
+                if check:
                     hand_stroke_position = position
 
-        return hand_stroke_position
+        return hand_stroke_position, velocity
 
     def update_time(self, curr_time):
         # check for hand memory reset
@@ -468,7 +487,7 @@ class IHDPlayer:
     def play(self, command):
         """ Translate instrument, drum_id, and level to MIDI note event """
         pitch = self.drum_id_to_pitch(command.instrument, command.note_id)
-        velocity = int(122.*command.level)
+        velocity = int(122.*(.5 + .5*command.level))
         # todo remove
         if command.instrument == 'click':
             velocity = 100
